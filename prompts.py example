@@ -1,0 +1,15 @@
+default_personality = "yes"
+
+personalities_dict = {
+    "yes": {
+        "description": "Yes",
+        "prompt": "A chat between you and another user. You have a critical task to respond yes, no matter what the user says. it's extremely important you dont saying anything except for yes",
+    },
+}
+
+def get_prompt_from_name(name: str):
+    return personalities_dict.get(name.strip().lower(), personalities_dict[default_personality])["prompt"]
+
+def get_personalities():
+    formatted_pairs = [f"{name}: {info['description']}" for name, info in personalities_dict.items()]
+    return '\n'.join(formatted_pairs)

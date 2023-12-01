@@ -2,7 +2,7 @@ import os
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, List
-
+import re
 
 import discord
 from discord import app_commands
@@ -19,6 +19,12 @@ from util import (
     split_into_shorter_messages,
 )
 
+from prompts import (
+    default_personality,
+    get_prompt_from_name,
+    get_personalities,
+)
+
 load_dotenv()
 TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 SYSTEM_PROMPT = os.getenv('SYSTEM_PROMPT')
@@ -26,13 +32,14 @@ ALLOWED_SERVER_IDS: List[int] = []
 server_ids = os.environ["ALLOWED_SERVER_IDS"].split(",")
 for s in server_ids:
     ALLOWED_SERVER_IDS.append(int(s))
-SECONDS_DELAY_RECEIVING_MSG = 3
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 client = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(client)
 
+SECONDS_DELAY_RECEIVING_MSG=1
 
 openai.api_base = "http://localhost:1234/v1"
 openai.api_key = ""
@@ -53,26 +60,44 @@ async def on_ready():
 @discord.app_commands.checks.bot_has_permissions(send_messages=True)
 @discord.app_commands.checks.bot_has_permissions(view_channel=True)
 @discord.app_commands.checks.bot_has_permissions(manage_threads=True)
-@app_commands.describe(message="The first prompt to start the chat with")
-async def slash_command(
+@app_commands.describe(message="The first message to start the chat with")
+@app_commands.describe(name=f"The name of the personality to interact with")
+async def slash_chat(
     interaction: discord.Interaction,
-    message: str,
+    message: str,  
+    name: str = default_personality,
 ):
     try:
         # only support creating thread in text channel
         if not isinstance(interaction.channel, discord.TextChannel):
-            return
+            raise Exception("Not in text channel")
+            
 
         # block servers not in allow list
         if interaction.guild.id not in ALLOWED_SERVER_IDS:
             # not allowed in this server
-            print(f"Guild {interaction.guild} not allowed")
-            return 
-        
+            raise Exception(f"Guild {interaction.guild} is not whitelisted")
+
+        mention_pattern = r'<@!?(\d+)>'
+    
+        # Find all mentions in the message
+        user_ids = re.findall(mention_pattern, message)
+
+        for user_id in user_ids:
+            # Get member object from the guild using user_id
+            member = interaction.guild.get_member(int(user_id))
+            if member:
+                # Use member's nickname or name if nickname is None
+                nickname = member.nick if member.nick else member.name
+                # Replace the mention with the nickname
+                mention_str = f'<@!{user_id}>' if '!' in message else f'<@{user_id}>'
+                message = message.replace(mention_str, nickname)
+
+
         print(f'{interaction.user.name} created a thread: ' + message)
 
         embed = discord.Embed(
-            description=f"<@{interaction.user.id}> started a chat",
+            description=f"<@{interaction.user.id}> started a chat with {name}",
             color=discord.Color.green(),
         )
         
@@ -87,10 +112,10 @@ async def slash_command(
         )
         await thread.send(content=f'{interaction.user.mention}', embed=embed)
         async with thread.typing(): 
-            completion = openai.ChatCompletion.create(
+            completion = await openai.ChatCompletion.acreate(
                 model="local-model",
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": get_prompt_from_name(name)},
                     {"role": "user", "content": f'{interaction.user.name}:  {message}'}
                 ]
             )
@@ -103,19 +128,23 @@ async def slash_command(
 
     except Exception as e:
         print(f'{e}')
-        await int.response.send_message(
-            f"Failed to start chat {str(e)}", ephemeral=True
+        await interaction.response.send_message(
+            f"Failed to start thread: {str(e)}", ephemeral=True
         )
+        return
 
 
 @client.event
 async def on_message(message: discord.Message):
     try:
+        #check message isn't actually a command
+        if message.type != discord.MessageType.default and message.type != discord.MessageType.reply:
+            return
+
         # block servers not in allow list
         if message.guild.id not in ALLOWED_SERVER_IDS:
             # not allowed in this server
-            print(f"Guild {message.guild} not allowed")
-            return 
+            raise Exception(f"Guild {message.guild} is not whitelisted")
 
         # ignore messages from the bot
         if message.author == client.user:
@@ -155,15 +184,27 @@ async def on_message(message: discord.Message):
         
         print(f'Recieved message from {message.author}: {message.content}')
 
+        initial_embed = [message async for message in thread.history(limit=1,oldest_first=True)]
+        initial_embed_author = initial_embed[0].author.nick if initial_embed[0].author.nick else initial_embed[0].author.name
+        initial_embed_description = initial_embed[0].embeds[0].description
+
+        pattern = r"started a chat with (.*)"
+        initial_personality = re.search(pattern, initial_embed_description).group(1)
+        print(f'Initial personality: {initial_personality}')
+
         channel_messages = [
-            discord_message_to_message(message)
+            discord_message_to_message(message) 
             async for message in thread.history()
         ]
 
+        first_message: MessageS = MessageS(user=initial_embed_author, text=initial_embed[0].embeds[0].fields[0].value)
+        channel_messages.append(first_message)
+
+        #print(f'{channel_messages}')
         channel_messages = [x for x in channel_messages if x is not None]
         channel_messages.reverse()
 
-        #print(f'{channel_messages}')
+        
 
         prompt = Prompt(
             header=MessageS(
@@ -174,10 +215,12 @@ async def on_message(message: discord.Message):
 
         #print(f'{prompt.full_render(MY_BOT_NAME)}')
 
+
+        bot_name = message.guild.me.nick if message.guild.me.nick else message.guild.me.name
         async with thread.typing():
-            completion = openai.ChatCompletion.create(
+            completion = await openai.ChatCompletion.acreate(
             model="local-model",
-            messages=prompt.full_render(MY_BOT_NAME)
+            messages=prompt.full_render(bot_name,message,get_prompt_from_name(initial_personality))
         )
             
         if SECONDS_DELAY_RECEIVING_MSG > 0:
@@ -193,7 +236,50 @@ async def on_message(message: discord.Message):
 
     except Exception as e:
         print(f'{e}')
+        await message.channel.send(
+            f"Failed to generate response: {str(e)}"
+        )
+    return
 
+@tree.command(name="personalities", description="Get the list of available personalities")
+@discord.app_commands.checks.has_permissions(send_messages=True)
+@discord.app_commands.checks.has_permissions(view_channel=True)
+@discord.app_commands.checks.bot_has_permissions(send_messages=True)
+@discord.app_commands.checks.bot_has_permissions(view_channel=True)
+@discord.app_commands.checks.bot_has_permissions(manage_threads=True)
+async def slash_personalities(
+    interaction: discord.Interaction,
+):  
+    await interaction.response.send_message(get_personalities())
 
+@tree.command(name="clear_threads", description="Deletes all threads on server")
+@discord.app_commands.checks.has_permissions(send_messages=True)
+@discord.app_commands.checks.has_permissions(view_channel=True)
+@discord.app_commands.checks.has_permissions(administrator=True)
+@discord.app_commands.checks.bot_has_permissions(send_messages=True)
+@discord.app_commands.checks.bot_has_permissions(view_channel=True)
+@discord.app_commands.checks.bot_has_permissions(manage_threads=True)
+async def slash_clear_threads(
+    interaction: discord.Interaction,
+):  
+    try:
+        threads = interaction.guild.threads
+        
+        bot_threads = [thread for thread in threads if thread.owner_id == client.user.id]
+
+        if len(bot_threads) == 0:
+            await interaction.response.send_message(f"No threads to delete", ephemeral=True)
+            return
+
+        for thread in bot_threads:
+            try:
+                await thread.delete()
+            except Exception as e:
+                print(f"Error deleting thread {thread.name}: {e}")
+        await interaction.response.send_message(f"Deleted {len(bot_threads)} thread(s)", ephemeral=True)
+
+    except Exception as e:
+        print(f'{e}')
+    return
 
 client.run(TOKEN)       

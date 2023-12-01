@@ -2,6 +2,7 @@ import os
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, List
+import re
 
 import discord
 from discord import app_commands
@@ -14,7 +15,7 @@ load_dotenv()
 SEPARATOR_TOKEN = "<|endoftext|>"
 SYSTEM_PROMPT = os.getenv('SYSTEM_PROMPT')
 
-@dataclass(frozen=True)
+@dataclass(frozen=False)
 class MessageS:
     user: str
     text: Optional[str] = None
@@ -43,14 +44,14 @@ class Prompt:
     header: MessageS
     convo: Conversation
 
-    def full_render(self, bot_name):
+    def full_render(self, bot_name, messageOG: discord.Message, system_prompt: str):
         messages = [
             {
                 "role": "system",
-                "content": f'{SYSTEM_PROMPT}',
+                "content": f'{system_prompt}',
             }
         ]
-        for message in self.render_messages(bot_name):
+        for message in self.render_messages(bot_name, messageOG):
             messages.append(message)
         return messages
 
@@ -66,8 +67,29 @@ class Prompt:
     #         # ]
     #     )
 
-    def render_messages(self, bot_name):
+    def render_messages(self, bot_name, messageOG: discord.Message):
         for message in self.convo.messages:
+            #print(f'Message: {message.text}')
+            mention_pattern = r'<@!?(\d+)>'
+        
+            # Find all mentions in the message
+            user_ids = re.findall(mention_pattern, message.text)
+            #print(f'Found IDs: {user_ids}')
+
+            for user_id in user_ids:
+                # Get member object from the guild using user_id
+                member = messageOG.guild.get_member(int(user_id))
+                #print(f'Found member: {member}')
+
+                if member:
+                    # Use member's nickname or name if nickname is None
+                    nickname = member.nick if member.nick else member.name
+                    #print(f'Found nickname for ID: {nickname}')
+                    # Replace the mention with the nickname
+                    mention_str = f'<@!{user_id}>' if '!' in message.text else f'<@{user_id}>'
+                    message.text = message.text.replace(mention_str, nickname)
+                    #print(f'changed to: {message.text}')
+
             if not bot_name in message.user:
                 yield {
                     "role": "user",
@@ -81,18 +103,15 @@ class Prompt:
 
 
 def discord_message_to_message(message: discord.Message) -> Optional[MessageS]:
-    if (
-        message.type == discord.MessageType.thread_starter_message
-        and message.reference.cached_message
-        and len(message.reference.cached_message.embeds) > 0
-        and len(message.reference.cached_message.embeds[0].fields) > 0
-    ):
-        field = message.reference.cached_message.embeds[0].fields[0]
-        if field.value:
-            return MessageS(user=field.name, text=field.value)
+    if message.mentions:
+        mention_str = ''.join(f'<@{user.id}>' for user in message.mentions)
+        if message.content.strip() == mention_str:
+            #print("The message contains only a mention.")
+            return
     else:
         if message.content:
-            return MessageS(user=message.author.name, text=message.content)
+            nickname = message.author.nick if message.author.nick else message.author.name
+            return MessageS(user=nickname, text=message.content)
     return None
 
 def split_into_shorter_messages(message: str) -> List[str]:
