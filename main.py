@@ -23,6 +23,7 @@ from prompts import (
     default_personality,
     get_prompt_from_name,
     get_personalities,
+    personalities_dict,
 )
 
 load_dotenv()
@@ -61,11 +62,17 @@ async def on_ready():
 @discord.app_commands.checks.bot_has_permissions(view_channel=True)
 @discord.app_commands.checks.bot_has_permissions(manage_threads=True)
 @app_commands.describe(message="The first message to start the chat with")
-@app_commands.describe(name=f"The name of the personality to interact with")
+@app_commands.describe(name=f"The name of the personality to interact with (default: {default_personality})")
+@app_commands.describe(hidden=f"Should the thread be hidden? (default: True)")
+@app_commands.choices(name=[
+    app_commands.Choice(name=personality, value=personality)
+    for personality in personalities_dict.keys()
+])
 async def slash_chat(
     interaction: discord.Interaction,
     message: str,  
     name: str = default_personality,
+    hidden: bool = True,
 ):
     try:
         # only support creating thread in text channel
@@ -105,10 +112,16 @@ async def slash_chat(
         embed.add_field(name=interaction.user.name, value=message)
         response = await interaction.original_response()
 
+        if hidden:
+            channel_type = discord.ChannelType.private_thread
+        else:
+            channel_type = discord.ChannelType.public_thread
+
         thread = await interaction.channel.create_thread(
             name = f"{interaction.user.name} - {message}",
             reason = "gpt-bot", 
             slowmode_delay=1,
+            type = channel_type,
         )
         await thread.send(content=f'{interaction.user.mention}', embed=embed)
         async with thread.typing(): 
@@ -220,7 +233,7 @@ async def on_message(message: discord.Message):
         async with thread.typing():
             completion = await openai.ChatCompletion.acreate(
             model="local-model",
-            messages=prompt.full_render(bot_name,message,get_prompt_from_name(initial_personality))
+            messages=prompt.full_render(bot_name,message,get_prompt_from_name(initial_personality),initial_personality)
         )
             
         if SECONDS_DELAY_RECEIVING_MSG > 0:
@@ -259,10 +272,16 @@ async def slash_personalities(
 @discord.app_commands.checks.bot_has_permissions(send_messages=True)
 @discord.app_commands.checks.bot_has_permissions(view_channel=True)
 @discord.app_commands.checks.bot_has_permissions(manage_threads=True)
+@app_commands.describe(verify=f"""Are you sure you want delete all threads? Type "yes" to confirm""")
 async def slash_clear_threads(
     interaction: discord.Interaction,
+    verify: str,
 ):  
     try:
+        if verify != "yes":
+            await interaction.response.send_message(f'verify was not "yes:", canceled', ephemeral=True)
+            return
+
         threads = interaction.guild.threads
         
         bot_threads = [thread for thread in threads if thread.owner_id == client.user.id]

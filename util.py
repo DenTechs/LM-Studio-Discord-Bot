@@ -44,14 +44,14 @@ class Prompt:
     header: MessageS
     convo: Conversation
 
-    def full_render(self, bot_name, messageOG: discord.Message, system_prompt: str):
+    def full_render(self, bot_name, messageOG: discord.Message, system_prompt: str, initial_personality: str):
         messages = [
             {
                 "role": "system",
                 "content": f'{system_prompt}',
             }
         ]
-        for message in self.render_messages(bot_name, messageOG):
+        for message in self.render_messages(bot_name, messageOG, initial_personality):
             messages.append(message)
         return messages
 
@@ -67,8 +67,9 @@ class Prompt:
     #         # ]
     #     )
 
-    def render_messages(self, bot_name, messageOG: discord.Message):
+    def render_messages(self, bot_name, messageOG: discord.Message, initial_personality: str):
         for message in self.convo.messages:
+
             #print(f'Message: {message.text}')
             mention_pattern = r'<@!?(\d+)>'
         
@@ -84,6 +85,8 @@ class Prompt:
                 if member:
                     # Use member's nickname or name if nickname is None
                     nickname = member.nick if member.nick else member.name
+                    if nickname == bot_name:
+                        nickname = initial_personality
                     #print(f'Found nickname for ID: {nickname}')
                     # Replace the mention with the nickname
                     mention_str = f'<@!{user_id}>' if '!' in message.text else f'<@{user_id}>'
@@ -105,9 +108,14 @@ class Prompt:
 def discord_message_to_message(message: discord.Message) -> Optional[MessageS]:
     if message.mentions:
         mention_str = ''.join(f'<@{user.id}>' for user in message.mentions)
+        #print(f'message: {message.content}\nmention_str: {mention_str}')
         if message.content.strip() == mention_str:
             #print("The message contains only a mention.")
             return
+        else:
+            nickname = message.author.nick if message.author.nick else message.author.name
+
+            return MessageS(user=nickname, text=message.content)
     else:
         if message.content:
             nickname = message.author.nick if message.author.nick else message.author.name
