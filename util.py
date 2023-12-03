@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 SEPARATOR_TOKEN = "<|endoftext|>"
-SYSTEM_PROMPT = os.getenv('SYSTEM_PROMPT')
 
 @dataclass(frozen=False)
 class MessageS:
