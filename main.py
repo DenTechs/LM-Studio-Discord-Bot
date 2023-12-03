@@ -33,6 +33,11 @@ ALLOWED_SERVER_IDS: List[int] = []
 server_ids = os.environ["ALLOWED_SERVER_IDS"].split(",")
 for s in server_ids:
     ALLOWED_SERVER_IDS.append(int(s))
+ALLOWED_CHANNEL_IDS: List[int] = []
+channel_ids = os.environ["ALLOWED_CHANNEL_IDS"].split(",")
+if channel_ids[0] != '':
+    for c in channel_ids:
+        ALLOWED_CHANNEL_IDS.append(int(c))
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -77,13 +82,16 @@ async def slash_chat(
     try:
         # only support creating thread in text channel
         if not isinstance(interaction.channel, discord.TextChannel):
-            raise Exception("Not in text channel")
-            
+            raise Exception("Not in text channel")           
 
         # block servers not in allow list
         if interaction.guild.id not in ALLOWED_SERVER_IDS:
             # not allowed in this server
             raise Exception(f"Guild {interaction.guild} is not whitelisted")
+        
+        #block channels not in allow list
+        if interaction.channel.id not in ALLOWED_CHANNEL_IDS and len(ALLOWED_CHANNEL_IDS) != 0:
+            raise Exception(f"Channel {interaction.channel} is not whitelisted")
 
         mention_pattern = r'<@!?(\d+)>'
     
@@ -118,7 +126,7 @@ async def slash_chat(
             channel_type = discord.ChannelType.public_thread
 
         thread = await interaction.channel.create_thread(
-            name = f"{interaction.user.name} - {message}",
+            name = f"{interaction.user.name} - {name}",
             reason = "gpt-bot", 
             slowmode_delay=1,
             type = channel_type,
@@ -141,9 +149,13 @@ async def slash_chat(
 
     except Exception as e:
         print(f'{e}')
-        await interaction.response.send_message(
-            f"Failed to start thread: {str(e)}", ephemeral=True
-        )
+        try:
+            await interaction.response.send_message(
+                f"Failed to start thread: {str(e)}", ephemeral=True
+            )
+            return
+        except Exception as e:
+            print(f'{e}')
         return
 
 
@@ -158,7 +170,7 @@ async def on_message(message: discord.Message):
         if message.guild.id not in ALLOWED_SERVER_IDS:
             # not allowed in this server
             raise Exception(f"Guild {message.guild} is not whitelisted")
-
+        
         # ignore messages from the bot
         if message.author == client.user:
             return
@@ -249,10 +261,14 @@ async def on_message(message: discord.Message):
 
     except Exception as e:
         print(f'{e}')
-        await message.channel.send(
-            f"Failed to generate response: {str(e)}"
-        )
-    return
+        try:
+            await thread.send(
+                f"Failed to start thread: {str(e)}"
+            )
+            return
+        except Exception as e:
+            print(f'{e}')
+        return
 
 @tree.command(name="personalities", description="Get the list of available personalities")
 @discord.app_commands.checks.has_permissions(send_messages=True)
